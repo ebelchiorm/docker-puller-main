@@ -65,6 +65,20 @@ func main() {
 	}
 	defer cli.Close()
 
+	if registryURL == "https://registry-1.docker.io/v2/" && registryUser != "" && registryPass != "" {
+		authConfig := types.AuthConfig{
+			Username:      registryUser,
+			Password:      registryPass,
+			ServerAddress: "https://index.docker.io/v1/",
+		}
+		_, err = cli.RegistryLogin(context.Background(), authConfig)
+		if err != nil {
+			logError("Docker login failed: %v", err)
+		} else {
+			logInfo("Docker login successful for user %s", registryUser)
+		}
+	}
+
 	logInfo("Starting puller service with interval: %ds", *interval)
 	logInfo("Cleanup enabled: %v", *cleanup)
 	logInfo("Label filtering enabled: %v", *labelEnable)
@@ -158,7 +172,7 @@ func checkContainers(cli *client.Client, registryURL, user, pass, registryTag, n
 			Password:      pass,
 			ServerAddress: registryURL,
 		}
-		if registryURL == "" || registryURL == "docker.io" || registryURL == "https://docker.io" {
+		if registryURL == "" || registryURL == "docker.io" || registryURL == "https://docker.io" || registryURL == "https://registry-1.docker.io/v2/" {
 			authConfig.ServerAddress = "https://index.docker.io/v1/"
 		}
 	} else {
@@ -200,6 +214,13 @@ func checkContainers(cli *client.Client, registryURL, user, pass, registryTag, n
 			} else {
 				parts := strings.Split(image, ":")
 				imageWithTag = parts[0] + ":" + tag
+			}
+
+			if registryURL == "https://registry-1.docker.io/v2/" && user != "" {
+				if !strings.HasPrefix(imageWithTag, "docker.io/") {
+					repo := strings.Split(imageWithTag, ":")[0]
+					imageWithTag = fmt.Sprintf("docker.io/%s/%s:%s", user, strings.TrimPrefix(repo, user+"/"), tag)
+				}
 			}
 
 			logVerbose("Checking container %s with tag %s", name, tag)
@@ -308,7 +329,6 @@ func recreateContainer(cli *client.Client, ctx context.Context, containerID, nam
 }
 
 func pullImageAndCheckUpdate(cli *client.Client, ctx context.Context, image string, authConfig types.AuthConfig, platform, name, notificationURL string, currentImgID string) (bool, error) {
-	// primeiro inspeciona imagem remota (puxa metadata mas não força update)
 	opts := types.ImagePullOptions{}
 	if authConfig.Username != "" && authConfig.Password != "" {
 		opts.RegistryAuth = encodeAuth(authConfig)
@@ -332,13 +352,11 @@ func pullImageAndCheckUpdate(cli *client.Client, ctx context.Context, image stri
 		logWarn("Failed to inspect current image: %v", err)
 	}
 
-	// Digest diferente
+	// Digest diferente, mas só atualiza se a data for mais nova
 	if newImg.ID != currentImgID {
-		// só troca se a data remota for mais nova
 		if localImg.Created != "" && newImg.Created != "" {
 			localTime, err1 := time.Parse(time.RFC3339Nano, localImg.Created)
 			remoteTime, err2 := time.Parse(time.RFC3339Nano, newImg.Created)
-
 			if err1 == nil && err2 == nil {
 				if remoteTime.After(localTime) {
 					logVerbose("Image %s has newer push date (remote: %s > local: %s)", name, remoteTime, localTime)
